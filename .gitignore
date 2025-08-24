@@ -1,0 +1,9 @@
+# Python cache dosyalarını yoksay
+__pycache__/
+*.pyc
+
+# Büyük veri dosyalarını yoksay
+data/movies_metadata.csv
+data/credits.csv
+data/keywords.csv
+data/ratings.csv
