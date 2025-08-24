@@ -41,7 +41,7 @@ def create_models():
     df['keywords'] = df['keywords'].apply(parse_literal).apply(lambda x: ' '.join([i['name'] for i in x]))
 
     df['soup'] = df['overview'].fillna('') + ' ' + df['genres'] + ' ' + df['keywords']
-    tfidf = TfidfVectorizer(stop_words='english')
+    tfidf = TfidfVectorizer(stop_words='english', max_features=20000)
     tfidf_matrix = tfidf.fit_transform(df['soup'])
     cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
     joblib.dump(cosine_sim, 'cosine_sim.pkl')
