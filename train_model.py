@@ -1,95 +1,80 @@
 import pandas as pd
-from surprise import Dataset, Reader, SVD
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import linear_kernel
 import joblib
 import warnings
-import json
-import ast
+from sklearn.decomposition import TruncatedSVD
+from scipy.sparse import csr_matrix
 
 warnings.filterwarnings("ignore")
 
 DATA_PATH = "data/"
 
-def train_svd_model():
-    """
-    Trains the Collaborative Filtering SVD model and saves it.
-    """
-    print("--- SVD Model Training Started ---")
-    
-    ratings = pd.read_csv(DATA_PATH + "ratings_small.csv")
-    reader = Reader(rating_scale=(1, 5))
-    data = Dataset.load_from_df(ratings[['userId', 'movieId', 'rating']], reader)
-    trainset = data.build_full_trainset()
-    
-    model = SVD(n_factors=150, n_epochs=20, lr_all=0.005, reg_all=0.04, random_state=42)
-    model.fit(trainset)
-    
-    joblib.dump(model, 'svd_model.pkl')
-    print("--- SVD Model Training Completed ---")
+def create_models():
+    print("--- Model Training & Processing Started ---")
 
-def create_content_model():
-    """
-    Creates and saves artifacts for the Content-Based Filtering model.
-    This includes a cosine similarity matrix and a consolidated movie dataframe.
-    """
-    print("--- Content-Based Model Creation Started ---")
+    # --- Content-Based Model ---
+    # Bu kısmı daha önceki çalışan versiyondan alıyoruz, ama surprise bağımlılığı yok.
+    # scikit-learn kullandığı için bu kısım zaten uyumlu.
+    print("1/2 - Creating Content-Based Model Artifacts...")
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import linear_kernel
+    import ast
 
     meta = pd.read_csv(DATA_PATH + 'movies_metadata.csv', low_memory=False)
-    credits = pd.read_csv(DATA_PATH + 'credits.csv')
     keywords = pd.read_csv(DATA_PATH + 'keywords.csv')
     links = pd.read_csv(DATA_PATH + 'links_small.csv')
 
     meta['id'] = pd.to_numeric(meta['id'], errors='coerce')
-    credits['id'] = pd.to_numeric(credits['id'], errors='coerce')
     keywords['id'] = pd.to_numeric(keywords['id'], errors='coerce')
-
     meta.dropna(subset=['id'], inplace=True)
     meta['id'] = meta['id'].astype(int)
-
-    df = meta.merge(credits, on='id').merge(keywords, on='id')
     
+    df = meta.merge(keywords, on='id')
     links = links[links['tmdbId'].notna()]
     links['tmdbId'] = links['tmdbId'].astype(int)
     df = df[df['id'].isin(links['tmdbId'])]
 
     def parse_literal(data):
-        try:
-            return ast.literal_eval(data)
-        except (ValueError, SyntaxError):
-            return []
+        try: return ast.literal_eval(data)
+        except: return []
 
-    df['genres_list'] = df['genres'].apply(parse_literal).apply(lambda x: [i['name'] for i in x])
-    df['genres'] = df['genres_list'].apply(lambda x: ' '.join(map(str, x)))
+    df['genres'] = df['genres'].apply(parse_literal).apply(lambda x: ' '.join([i['name'] for i in x]))
+    df['keywords'] = df['keywords'].apply(parse_literal).apply(lambda x: ' '.join([i['name'] for i in x]))
 
-    df['keywords_list'] = df['keywords'].apply(parse_literal).apply(lambda x: [i['name'] for i in x])
-    df['keywords'] = df['keywords_list'].apply(lambda x: ' '.join(map(str, x)))
-
-    def get_director(data):
-        crew_list = parse_literal(data)
-        for crew_member in crew_list:
-            if crew_member.get('job') == 'Director':
-                return crew_member.get('name', '')
-        return ""
-    
-    df['director'] = df['crew'].apply(get_director)
-
-    df['soup'] = df['overview'].fillna('') + ' ' + df['genres'] + ' ' + df['keywords'] + ' ' + df['director']
-    
+    df['soup'] = df['overview'].fillna('') + ' ' + df['genres'] + ' ' + df['keywords']
     tfidf = TfidfVectorizer(stop_words='english')
     tfidf_matrix = tfidf.fit_transform(df['soup'])
     cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
-
     joblib.dump(cosine_sim, 'cosine_sim.pkl')
-    
-    df_processed = df[['id', 'title', 'genres_list', 'overview']].rename(columns={'id': 'tmdbId'})
-    final_df = df_processed.merge(links, on='tmdbId')[['movieId', 'tmdbId', 'title', 'genres_list', 'overview']]
-    joblib.dump(final_df, 'movies_df.pkl')
 
-    print("--- Content-Based Model Creation Completed ---")
+    df_processed = df[['id', 'title']].rename(columns={'id': 'tmdbId'})
+    final_df = df_processed.merge(links, on='tmdbId')[['movieId', 'tmdbId', 'title']]
+    joblib.dump(final_df, 'movies_df.pkl')
+    print("Content-Based Model Artifacts Created.")
+
+    # --- Collaborative Filtering Model (scikit-learn SVD) ---
+    print("2/2 - Training scikit-learn SVD Model...")
+    ratings = pd.read_csv(DATA_PATH + "ratings_small.csv")
+    
+    # Create a user-item matrix
+    user_movie_matrix = ratings.pivot(
+        index='userId',
+        columns='movieId',
+        values='rating'
+    ).fillna(0)
+
+    # Convert to sparse matrix for efficiency
+    user_movie_sparse_matrix = csr_matrix(user_movie_matrix.values)
+
+    # Train SVD model
+    svd_model = TruncatedSVD(n_components=150, random_state=42)
+    svd_model.fit(user_movie_sparse_matrix)
+
+    # Save the model and the matrix columns (for mapping movieIds)
+    joblib.dump(svd_model, 'svd_model.pkl')
+    joblib.dump(user_movie_matrix.columns, 'movie_ids_map.pkl')
+    print("scikit-learn SVD Model Trained.")
+    
+    print("--- All Models Created Successfully! ---")
 
 if __name__ == "__main__":
-    print("--- Full Training Pipeline Initiated ---")
-    train_svd_model()
-    create_content_model()
-    print("--- Full Training Pipeline Completed Successfully! ---")
+    create_models()
